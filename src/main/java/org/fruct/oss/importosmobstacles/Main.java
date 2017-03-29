@@ -34,6 +34,58 @@ import org.apache.commons.cli.ParseException;
  */
 public class Main {
 
+    /**
+     * Удаление дубликата из БД
+     *
+     * @param pointID ID дубликата
+     */
+    private void removeDuplicate(int pointID) throws SQLException {
+        String query = " delete from tag where id=?;";
+        PreparedStatement stmt = c.prepareStatement(query);
+        stmt.setInt(1, pointID);
+        int rows = stmt.executeUpdate();
+        if (rows != 1) {
+            throw new SQLException("Cannot delete point with id=" + pointID);
+        } else {
+            System.out.println("Remove point with id=" + pointID);
+        }
+    }
+
+    /**
+     * Сравнение описаний точек
+     *
+     * @param desc1 Описание точку 1 в формате json
+     * @param desc2 Описание точки 2 в формате json
+     * @return
+     */
+    private boolean compareDescriptions(String desc1, String desc2) {
+        HashMap data1 = new HashMap<String, Object>();
+        HashMap data2 = new HashMap<String, Object>();
+        data1 = this.gson.fromJson(desc1, data1.getClass());
+        data2 = this.gson.fromJson(desc2, data2.getClass());
+        if (data1 == null || data2 == null) {
+            throw new UnsupportedOperationException("Not supported yet."); //To change body of generated methods, choose Tools | Templates.
+        }
+        data1.remove("uuid");
+        data2.remove("uuid");
+        boolean flag = true;
+        for (Object key : data1.keySet()) {
+            if (!data2.containsKey(key) || !data1.get(key).equals(data2.get(key))) {
+                flag = false;
+                break;
+            }
+        }
+        if (flag) {
+            for (Object key : data2.keySet()) {
+                if (!data1.containsKey(key)) {
+                    flag = false;
+                    break;
+                }
+            }
+        }
+        return flag;
+    }
+
     public static enum Status {
         ADDED, SKIPPED, UPDATED, MOVED
     };
@@ -76,7 +128,7 @@ public class Main {
         try {
             Class.forName("org.postgresql.Driver");
             c = DriverManager
-                    .getConnection("jdbc:postgresql://"+host+":"+port+"/geo2tag",
+                    .getConnection("jdbc:postgresql://" + host + ":" + port + "/geo2tag",
                             login, password);
         } catch (Exception e) {
             e.printStackTrace();
@@ -118,35 +170,35 @@ public class Main {
         Option opt = new Option("u", "user", true, "E-mail of owned user");
         opt.setRequired(false);
         opts.addOption(opt);
-        
+
         opt = new Option("s", "superuser", true, "E-mail of project super user");
         opt.setRequired(false);
         opts.addOption(opt);
-        
+
         opt = new Option("i", "input", true, "Input file with obstacles");
         opt.setRequired(true);
         opts.addOption(opt);
-        
+
         opt = new Option("h", "host", true, "GeTS database server host (default localhost)");
         opt.setRequired(false);
         opts.addOption(opt);
-        
+
         opt = new Option("p", "port", true, "GeTS database server port (default 5432)");
         opt.setRequired(false);
         opts.addOption(opt);
-        
+
         opt = new Option("l", "login", true, "GeTS database login (default geo2tag)");
         opt.setRequired(false);
         opts.addOption(opt);
-        
+
         opt = new Option("w", "password", true, "GeTS database password (default geo2tag)");
         opt.setRequired(false);
         opts.addOption(opt);
-        
+
         CommandLineParser parser = new DefaultParser();
         HelpFormatter formatter = new HelpFormatter();
         CommandLine cmd;
-        
+
         try {
             cmd = parser.parse(opts, args);
         } catch (ParseException ex) {
@@ -155,16 +207,15 @@ public class Main {
             System.exit(1);
             return;
         }
-        
+
         String input_file = cmd.getOptionValue("input");
-        String owner = cmd.getOptionValue("user",  "obstacle.osm@gmail.com");
+        String owner = cmd.getOptionValue("user", "obstacle.osm@gmail.com");
         String superUser = cmd.getOptionValue("superuser", "getsobstacletest@gmail.com");
         String host = cmd.getOptionValue("host", "localhost");
         int port = Integer.parseInt(cmd.getOptionValue("port", "5432"));
         String login = cmd.getOptionValue("login", "geo2tag");
         String password = cmd.getOptionValue("password", "geo2tag");
-        
-        
+
         Main m = new Main(owner, superUser, host, port, login, password);
 
         //TODO: разбор файла с данными
@@ -235,10 +286,6 @@ public class Main {
             throw new ObjectNotFoundException("Category \"" + point.get("type") + "\" not found.");
         }
 
-        if (((Double) point.get("id")).intValue() == 1831963699) {
-            System.out.println("Bingo");
-        }
-
         Statement stmt = c.createStatement(ResultSet.TYPE_SCROLL_INSENSITIVE, ResultSet.CONCUR_READ_ONLY);
 
         // 1. Поиск точки среди своих точек
@@ -277,14 +324,23 @@ public class Main {
             rs = stmt.executeQuery(query);
             if (rs.last()) {
                 int rows = rs.getRow();
-                if (rows > 1) {
-                    //TODO: реализовать обработку нескольких результатов
-                    throw new UnsupportedOperationException("Not supported yet."); //To change body of generated methods, choose Tools | Templates.
-                }
                 int point_id = rs.getInt("id");
                 int user_id = rs.getInt("user_id");
                 String label = rs.getString("label");
                 String description = rs.getString("description");
+                if (rows > 1) {
+                    rs.beforeFirst();
+                    while (rs.next() && !rs.isLast()) {
+                        if (rs.getInt("user_id") == user_id
+                                && rs.getString("label").equals(label)
+                                && compareDescriptions(rs.getString("description"), description)) {
+                            this.removeDuplicate(rs.getInt("id"));
+                        } else {
+                            throw new ObjectNotFoundException("duplicate points!\n first point: id=" + rs.getInt("id") + "; user_id=" + rs.getInt("user_id") + "; label=" + rs.getString("label") + "; desc=" + rs.getString("description")
+                                    + ";\n second point: id=" + point_id + "; user=" + user_id + "; label=" + label + "; desc=" + description);
+                        }
+                    }
+                }
                 stmt.close();
                 if (!validatePoint(point, label, description)) {
                     updatePoint(point, point_id, user_id, category, label, description);
